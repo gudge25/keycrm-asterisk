@@ -1,16 +1,23 @@
 const http = require('http');
+const { URL } = require('url');
 
 const MAX_BODY_BYTES = 10 * 1024;
 
 function createServer({ sharedSecret, routes, logger }) {
   return http.createServer((req, res) => {
-    if (req.method !== 'POST' || !routes[req.url]) {
+    const parsedUrl = new URL(req.url, 'http://internal');
+    const route = routes[parsedUrl.pathname];
+
+    if (req.method !== 'POST' || !route) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'not found' }));
       return;
     }
 
-    const provided = req.headers['x-keycrm-shared-secret'];
+    // KeyCRM's "Other" channel UI has no field for custom headers, so the
+    // shared secret is also accepted as a ?token= query param on the URLs
+    // configured in KeyCRM. The header is kept too for callers that can set it.
+    const provided = req.headers['x-keycrm-shared-secret'] || parsedUrl.searchParams.get('token');
     if (provided !== sharedSecret) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
@@ -44,12 +51,12 @@ function createServer({ sharedSecret, routes, logger }) {
       }
 
       try {
-        const result = await routes[req.url](parsed);
+        const result = await route(parsed);
         res.writeHead(result.status || 200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result.body ?? {}));
       } catch (err) {
         const status = err.statusCode || 500;
-        logger.error('http.route_error', { url: req.url, error: err.message });
+        logger.error('http.route_error', { url: parsedUrl.pathname, error: err.message });
         res.writeHead(status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }

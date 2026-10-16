@@ -20,12 +20,12 @@ permit=127.0.0.1/255.255.255.255
 
 In KeyCRM: Settings → Communications → Telephony → add a channel, service type "Other".
 
-- **Call initiation URL**: `http://<this-host>:<HTTP_PORT>/call/start`
-- **Call end URL**: `http://<this-host>:<HTTP_PORT>/call/end`
+- **Call initiation URL**: `http://<this-host>:<HTTP_PORT>/call/start?token=<HTTP_SHARED_SECRET>`
+- **Call end URL**: `http://<this-host>:<HTTP_PORT>/call/end?token=<HTTP_SHARED_SECRET>`
 - **Webhook URL**: copy the one KeyCRM generates into `KEYCRM_WEBHOOK_URL` below.
 - Deep link: off.
 
-Both HTTP endpoints require a `X-Keycrm-Shared-Secret` header matching `HTTP_SHARED_SECRET` — KeyCRM's "Other" channel type doesn't document an auth scheme for the URLs it calls, so this is our own minimal guard. If KeyCRM's UI can't send custom headers, put this service behind a reverse proxy that injects it, or drop the check.
+Both HTTP endpoints require the shared secret either via the `X-Keycrm-Shared-Secret` header or a `?token=` query param (KeyCRM's "Other" channel UI has no field for custom headers, so the query param is what you'll actually use when configuring the URLs above — the header is only useful for other callers, e.g. manual curl testing).
 
 ## Configuration
 
@@ -72,13 +72,13 @@ Point `.env`'s `KEYCRM_WEBHOOK_URL` at `http://127.0.0.1:9099`, then:
 
 ```
 # click-to-call
-curl -X POST http://127.0.0.1:8088/call/start \
-  -H 'X-Keycrm-Shared-Secret: <HTTP_SHARED_SECRET>' -H 'Content-Type: application/json' \
+curl -X POST "http://127.0.0.1:${HTTP_PORT}/call/start?token=${HTTP_SHARED_SECRET}" \
+  -H 'Content-Type: application/json' \
   -d '{"caller":"<real 4-digit ext>","destination_number":"<reachable test number>"}'
 
 # hang up (use the id returned above)
-curl -X POST http://127.0.0.1:8088/call/end \
-  -H 'X-Keycrm-Shared-Secret: <HTTP_SHARED_SECRET>' -H 'Content-Type: application/json' \
+curl -X POST "http://127.0.0.1:${HTTP_PORT}/call/end?token=${HTTP_SHARED_SECRET}" \
+  -H 'Content-Type: application/json' \
   -d '{"id":"<id>"}'
 ```
 
