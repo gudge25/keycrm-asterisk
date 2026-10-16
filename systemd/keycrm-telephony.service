@@ -5,9 +5,9 @@ Wants=asterisk.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/keycrm-telephony
-EnvironmentFile=/opt/keycrm-telephony/.env
-ExecStart=/usr/bin/node /opt/keycrm-telephony/src/index.js
+WorkingDirectory=/opt/keycrm-asterisk
+EnvironmentFile=/opt/keycrm-asterisk/.env
+ExecStart=/usr/bin/node /opt/keycrm-asterisk/src/index.js
 Restart=always
 RestartSec=5
 User=keycrm-telephony

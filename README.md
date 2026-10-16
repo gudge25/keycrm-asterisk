@@ -31,8 +31,9 @@ Both HTTP endpoints require the shared secret either via the `X-Keycrm-Shared-Se
 
 Copy `.env.example` to `.env` and fill in real values. See that file for every variable; the important ones:
 
+- `HTTP_PORT`: **check this isn't already taken before picking it.** FreePBX/Asterisk's own built-in HTTP server (`http.conf`) commonly binds port `8088` by default, so that's a common collision — run `ss -tlnp | grep <port>` first. `8080` is a reasonable alternative if `8088` is taken.
 - `ORIGINATE_CHANNEL_TEMPLATE` (`PJSIP/{ext}`) and `ORIGINATE_CONTEXT` (`from-internal`) control how click-to-call originates — adjust if your dialplan differs.
-- `INBOUND_CONTEXTS` lists the context(s) a fresh external `Newchannel` arrives in (FreePBX default: `from-trunk`, routed through `ext-did`). Adjust to match `dialplan show` on your box if calls aren't detected.
+- `INBOUND_CONTEXTS` lists the context(s) a fresh external `Newchannel` arrives in. `dialplan show from-trunk` showing an essentially empty context that just `Include =>`s `from-pstn` is normal for FreePBX — the channel's *initial* `Context` on `Newchannel` still reflects the trunk's configured context (often `from-trunk` itself), not where the dialplan logic actually lives. Don't guess from `dialplan show` alone: run `node tools/ami-sniffer.js`, place one real test call to a DID, and read the `context` field off the first `Newchannel` event — that's the value to put here.
 - `EXTENSION_LENGTH=4` is used to recognize internal extensions inside Asterisk channel/dialstring values.
 
 ## Running
@@ -45,17 +46,28 @@ npm start
 
 ## Deploying as a systemd service
 
+The shipped unit file (`systemd/keycrm-telephony.service`) assumes the repo is cloned to `/opt/keycrm-asterisk`. If you cloned it somewhere else, edit the `WorkingDirectory`/`EnvironmentFile`/`ExecStart` paths in that file first (or `sed -i 's#/opt/keycrm-asterisk#<your path>#g' systemd/keycrm-telephony.service`).
+
+Recommended order — confirm it runs correctly in the foreground *before* installing it as a service, so you're not debugging through `journalctl`:
+
 ```
-sudo useradd --system --no-create-home keycrm-telephony
-sudo mkdir -p /opt/keycrm-telephony
-# copy repo contents to /opt/keycrm-telephony, then:
-cd /opt/keycrm-telephony
+cd /opt/keycrm-asterisk
+git clone <this repo> .          # or however you got the code here
 npm ci --omit=dev
+cp .env.example .env             # then edit with real values
+LOG_LEVEL=debug node src/index.js
+```
+
+Look for `ami.tcp_connected` and `ami.authenticated` in the output. Once that's confirmed (Ctrl+C to stop it), install as a service:
+
+```
 chmod 600 .env
-sudo chown -R keycrm-telephony:keycrm-telephony /opt/keycrm-telephony
-sudo cp systemd/keycrm-telephony.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now keycrm-telephony
+useradd --system --no-create-home keycrm-telephony
+chown -R keycrm-telephony:keycrm-telephony /opt/keycrm-asterisk
+cp systemd/keycrm-telephony.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now keycrm-telephony
+journalctl -u keycrm-telephony -f
 ```
 
 `Restart=always` is an OS-level safety net on top of (not a replacement for) the AMI client's own reconnect-with-backoff (handled by `asterisk-manager`'s `keepConnected()`, 10s → 60s linear backoff).
