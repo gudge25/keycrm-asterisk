@@ -1,0 +1,20 @@
+[Unit]
+Description=KeyCRM <-> Asterisk AMI telephony bridge
+After=network.target asterisk.service
+Wants=asterisk.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/keycrm-telephony
+EnvironmentFile=/opt/keycrm-telephony/.env
+ExecStart=/usr/bin/node /opt/keycrm-telephony/src/index.js
+Restart=always
+RestartSec=5
+User=keycrm-telephony
+Group=keycrm-telephony
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

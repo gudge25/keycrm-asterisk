@@ -1,0 +1,21 @@
+{
+  "name": "keycrm-telephony",
+  "version": "1.0.0",
+  "description": "KeyCRM <-> Asterisk AMI telephony bridge",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "sniff": "node tools/ami-sniffer.js",
+    "fake-keycrm": "node tools/fake-keycrm-server.js"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "asterisk-manager": "^0.2.0",
+    "dotenv": "^18.0.8"
+  }
+}
