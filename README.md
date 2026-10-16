@@ -16,6 +16,20 @@ Three independent safeguards, all tunable in `.env`:
 - **Uncorrelated-originate cleanup**: if an outgoing call's `Newchannel` never arrives (e.g. the extension never actually rings), the record is force-reported to KeyCRM as `canceled` and cleaned up `ORIGINATE_TIMEOUT_MS + 5s` after the attempt, instead of leaking in memory forever.
 - **`STALE_CALL_MAX_AGE_MS`** / **`STALE_SWEEP_INTERVAL_MS`** (defaults 4h / 5min): a periodic sweep force-expires any call record older than the max age regardless of state, as a last-resort bound on memory even if some AMI event gets missed or a bug leaves a record stuck.
 
+## Security posture
+
+What's covered:
+- AMI credentials never leave `.env` (gitignored, never committed to this repo).
+- `manager.conf`'s `permit=127.0.0.1` means the AMI port is not reachable from the internet at all — only from this box.
+- The service runs as a dedicated unprivileged `keycrm-telephony` system user (not root), with systemd hardening (`NoNewPrivileges`, `ProtectSystem=full`, `ProtectHome=true`).
+- `/call/start` and `/call/end` require a 256-bit random shared secret (`HTTP_SHARED_SECRET`), effectively unguessable by brute force.
+
+What's **not** covered yet — known gaps, not yet fixed:
+1. **Plain HTTP, not HTTPS.** The shared secret travels as a `?token=` query param in plaintext over the public internet on every request. Anyone positioned to intercept traffic between KeyCRM and this box can read it. Fix: put this service behind nginx/Caddy with a Let's Encrypt cert and give KeyCRM the `https://` URL instead of talking to port 8080 directly.
+2. **Token ends up in logs if you add a reverse proxy** — default access log formats record the full URL including `?token=...`. Configure the proxy to redact query strings in its log format.
+3. **No IP allowlisting on the HTTP port** — it's open to the whole internet, protected only by the token. If KeyCRM publishes the source IP ranges its webhooks originate from, firewalling the HTTP port to just those ranges is worthwhile defense-in-depth.
+4. **`manager.conf` permissions below are broader than strictly needed** — we only consume the `call` event class (see "Event volume" above) and `originate`/`call` write for Originate/Hangup. Tightening this matters less since the AMI port itself isn't internet-reachable, but it's still broader than least-privilege.
+
 ## Asterisk setup
 
 Add an AMI user in `manager.conf` (e.g. via FreePBX's custom config):
