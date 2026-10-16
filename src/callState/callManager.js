@@ -18,6 +18,13 @@ class ValidationError extends Error {
   }
 }
 
+class TooManyCallsError extends Error {
+  constructor(message) {
+    super(message);
+    this.statusCode = 503;
+  }
+}
+
 class CallManager {
   constructor({ ami, store, webhookClient, logger, config }) {
     this.ami = ami;
@@ -32,7 +39,7 @@ class CallManager {
   // --- HTTP-facing API -----------------------------------------------
 
   async startOutgoingCall({ caller, destinationNumber }) {
-    const { extensionLength, originateChannelTemplate, originateContext, originateTimeoutMs } = this.config.call;
+    const { extensionLength, originateChannelTemplate, originateContext, originateTimeoutMs, maxConcurrentCalls } = this.config.call;
 
     if (!isValidExtension(caller, extensionLength)) {
       throw new ValidationError(`caller must be a ${extensionLength}-digit extension`);
@@ -40,6 +47,15 @@ class CallManager {
     const destination = normalizePhone(destinationNumber);
     if (!destination) {
       throw new ValidationError('destination_number is required');
+    }
+
+    // Fail closed before ever touching AMI: a bug, retry storm, or leaked
+    // token on KeyCRM's side shouldn't be able to flood Asterisk with
+    // channel-creation requests.
+    const activeCount = this.store.countActive();
+    if (activeCount >= maxConcurrentCalls) {
+      this.logger.warn('call.rejected_too_many_active', { activeCount, maxConcurrentCalls });
+      throw new TooManyCallsError('too many concurrent calls, try again later');
     }
 
     const id = crypto.randomUUID();
@@ -80,7 +96,29 @@ class CallManager {
 
     this.logger.info('call.originated', { id, caller, destination, amiResponse: response.response });
     this._report(record);
+
+    // If Newchannel never arrives to correlate this call (e.g. the
+    // extension never actually rings — offline phone, bad channel string),
+    // nothing would otherwise move it out of 'started', leaking the record
+    // and the pendingOriginates entry forever. Clear it out and report a
+    // terminal state once the originate timeout has clearly passed.
+    const expireTimer = setTimeout(
+      () => this._expireUncorrelatedOriginate(id, caller),
+      originateTimeoutMs + 5000
+    );
+    expireTimer.unref();
+
     return { id };
+  }
+
+  _expireUncorrelatedOriginate(id, caller) {
+    if (this.store.pendingOriginates.get(caller) !== id) return; // already correlated or already gone
+    this.store.pendingOriginates.delete(caller);
+    const record = this.store.getById(id);
+    if (!record) return;
+    this.logger.warn('call.originate_never_correlated', { id, caller });
+    this._transition(record, 'canceled');
+    this.store.scheduleCleanup(id);
   }
 
   async endCall({ id, caller, destinationNumber }) {

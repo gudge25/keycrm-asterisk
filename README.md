@@ -8,6 +8,14 @@ Scope: **report-only** for incoming calls. Asterisk's existing dialplan decides 
 
 On login, AMI defaults to streaming every event class (dialplan, verbose, security, CDR, etc.). We immediately narrow that to just the `call` class — the one covering `Newchannel`/`DialBegin`/`DialEnd`/`Hangup`/transfers, i.e. everything `callManager` actually uses — via an `Action: Events, EventMask: call` sent right after each login (including after reconnects, since login always resets the mask back to "on"). Without this, a single call on a busy FreePBX box can generate dozens of `VarSet`/`Newexten` events we'd otherwise receive and immediately discard.
 
+## Overload safety
+
+Three independent safeguards, all tunable in `.env`:
+
+- **`MAX_CONCURRENT_CALLS`** (default 50): `/call/start` is rejected with `503` once this many calls are active, *before* any AMI action is sent — protects Asterisk itself from a bug, retry storm, or leaked token flooding it with `Originate` requests.
+- **Uncorrelated-originate cleanup**: if an outgoing call's `Newchannel` never arrives (e.g. the extension never actually rings), the record is force-reported to KeyCRM as `canceled` and cleaned up `ORIGINATE_TIMEOUT_MS + 5s` after the attempt, instead of leaking in memory forever.
+- **`STALE_CALL_MAX_AGE_MS`** / **`STALE_SWEEP_INTERVAL_MS`** (defaults 4h / 5min): a periodic sweep force-expires any call record older than the max age regardless of state, as a last-resort bound on memory even if some AMI event gets missed or a bug leaves a record stuck.
+
 ## Asterisk setup
 
 Add an AMI user in `manager.conf` (e.g. via FreePBX's custom config):

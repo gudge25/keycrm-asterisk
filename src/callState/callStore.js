@@ -40,11 +40,46 @@ class CallStore {
 
   scheduleCleanup(id) {
     const timer = setTimeout(() => {
-      const record = this.byId.get(id);
-      if (record && record.linkedid) this.linkedidIndex.delete(record.linkedid);
-      this.byId.delete(id);
+      this._remove(id);
     }, CLEANUP_DELAY_MS);
     timer.unref();
+  }
+
+  countActive() {
+    let count = 0;
+    for (const record of this.byId.values()) {
+      if (ACTIVE_STATES.has(record.state)) count += 1;
+    }
+    return count;
+  }
+
+  // Safety net for records that never reach a terminal state via normal AMI
+  // events (e.g. a Newchannel that never correlates, or a dropped/missed
+  // event) — without this, such a record and its index entries would stay
+  // in memory forever. Call periodically via startStaleSweep().
+  pruneStale(maxAgeMs, logger) {
+    const cutoff = Date.now() - maxAgeMs;
+    for (const [id, record] of this.byId) {
+      if (record.createdAt < cutoff) {
+        if (logger) logger.warn('callStore.pruned_stale', { id, state: record.state, ageMs: Date.now() - record.createdAt });
+        this._remove(id);
+      }
+    }
+    for (const [ext, id] of this.pendingOriginates) {
+      if (!this.byId.has(id)) this.pendingOriginates.delete(ext);
+    }
+  }
+
+  startStaleSweep({ maxAgeMs, intervalMs, logger }) {
+    const timer = setInterval(() => this.pruneStale(maxAgeMs, logger), intervalMs);
+    timer.unref();
+    return timer;
+  }
+
+  _remove(id) {
+    const record = this.byId.get(id);
+    if (record && record.linkedid) this.linkedidIndex.delete(record.linkedid);
+    this.byId.delete(id);
   }
 }
 

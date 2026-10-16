@@ -24,6 +24,12 @@ function main() {
   const webhookClient = new WebhookClient({ url: config.keycrm.webhookUrl, ...config.webhook, logger });
   const callManager = new CallManager({ ami, store, webhookClient, logger, config });
 
+  store.startStaleSweep({
+    maxAgeMs: config.call.staleCallMaxAgeMs,
+    intervalMs: config.call.staleSweepIntervalMs,
+    logger,
+  });
+
   const server = createServer({
     sharedSecret: config.http.sharedSecret,
     logger,

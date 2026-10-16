@@ -20,6 +20,16 @@ function requireInt(name, { min } = {}) {
   return { value };
 }
 
+function optionalInt(name, defaultValue, { min } = {}) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return { value: defaultValue };
+  const value = Number(raw);
+  if (!Number.isInteger(value) || (min !== undefined && value < min)) {
+    return { error: `${name} must be an integer${min !== undefined ? ` >= ${min}` : ''}` };
+  }
+  return { value };
+}
+
 function loadConfig() {
   const errors = [];
 
@@ -38,6 +48,9 @@ function loadConfig() {
   const webhookTimeoutMs = requireInt('WEBHOOK_TIMEOUT_MS', { min: 100 });
   const webhookMaxRetries = requireInt('WEBHOOK_MAX_RETRIES', { min: 0 });
   const webhookRetryBaseMs = requireInt('WEBHOOK_RETRY_BASE_MS', { min: 10 });
+  const maxConcurrentCalls = optionalInt('MAX_CONCURRENT_CALLS', 50, { min: 1 });
+  const staleCallMaxAgeMs = optionalInt('STALE_CALL_MAX_AGE_MS', 4 * 60 * 60 * 1000, { min: 60000 });
+  const staleSweepIntervalMs = optionalInt('STALE_SWEEP_INTERVAL_MS', 5 * 60 * 1000, { min: 10000 });
 
   for (const [name, result] of [
     ['AMI_PORT', amiPort],
@@ -47,6 +60,9 @@ function loadConfig() {
     ['WEBHOOK_TIMEOUT_MS', webhookTimeoutMs],
     ['WEBHOOK_MAX_RETRIES', webhookMaxRetries],
     ['WEBHOOK_RETRY_BASE_MS', webhookRetryBaseMs],
+    ['MAX_CONCURRENT_CALLS', maxConcurrentCalls],
+    ['STALE_CALL_MAX_AGE_MS', staleCallMaxAgeMs],
+    ['STALE_SWEEP_INTERVAL_MS', staleSweepIntervalMs],
   ]) {
     if (result.error) errors.push(result.error);
   }
@@ -92,6 +108,9 @@ function loadConfig() {
       originateContext: process.env.ORIGINATE_CONTEXT,
       originateTimeoutMs: originateTimeoutMs.value,
       inboundContexts,
+      maxConcurrentCalls: maxConcurrentCalls.value,
+      staleCallMaxAgeMs: staleCallMaxAgeMs.value,
+      staleSweepIntervalMs: staleSweepIntervalMs.value,
     },
     webhook: {
       timeoutMs: webhookTimeoutMs.value,
