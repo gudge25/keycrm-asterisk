@@ -4,6 +4,10 @@ Bridges an Asterisk 20 (FreePBX) PBX to KeyCRM's "Other" telephony channel. KeyC
 
 Scope: **report-only** for incoming calls. Asterisk's existing dialplan decides who rings; this service only observes and reports state. KeyCRM's `action:"route"` lookup (active call redirection) is not implemented.
 
+## Event volume
+
+On login, AMI defaults to streaming every event class (dialplan, verbose, security, CDR, etc.). We immediately narrow that to just the `call` class — the one covering `Newchannel`/`DialBegin`/`DialEnd`/`Hangup`/transfers, i.e. everything `callManager` actually uses — via an `Action: Events, EventMask: call` sent right after each login (including after reconnects, since login always resets the mask back to "on"). Without this, a single call on a busy FreePBX box can generate dozens of `VarSet`/`Newexten` events we'd otherwise receive and immediately discard.
+
 ## Asterisk setup
 
 Add an AMI user in `manager.conf` (e.g. via FreePBX's custom config):

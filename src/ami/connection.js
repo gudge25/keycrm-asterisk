@@ -12,6 +12,19 @@ class AmiConnection {
     this.ami.on('response', (evt) => {
       if (evt.response === 'Success' && evt.message === 'Authentication accepted') {
         this.logger.info('ami.authenticated');
+        // Login subscribes to every event class ("Events: on"); narrow it down
+        // to just the "call" class (Newchannel/DialBegin/DialEnd/Hangup/
+        // transfers — everything callManager uses) so we're not also flooded
+        // with per-dialplan-step VarSet/Newexten and other unrelated noise.
+        // Must be re-sent after every (re)login, since login always resets
+        // the mask back to "on".
+        this.ami.action({ action: 'events', eventmask: 'call' }, (err, res) => {
+          if (err) {
+            this.logger.warn('ami.eventmask_failed', { error: res && res.message });
+          } else {
+            this.logger.debug('ami.eventmask_set', { eventmask: 'call' });
+          }
+        });
       }
     });
   }
