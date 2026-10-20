@@ -151,6 +151,9 @@ class CallManager {
       case 'DialEnd':
         this._handleDial(evt);
         break;
+      case 'VarSet':
+        this._handleVarSet(evt);
+        break;
       case 'HangupRequest':
         this._handleHangupRequest(evt);
         break;
@@ -267,6 +270,39 @@ class CallManager {
     }
   }
 
+  // MixMonitor publishes the recording path as MIXMONITOR_FILENAME. Every
+  // ringing leg can start its own recording, so collect them all and pick
+  // the answering operator's at 'completed' time (see _recordingUrl).
+  _handleVarSet(evt) {
+    const { baseUrl, monitorDir } = this.config.recording || {};
+    if (!baseUrl) return;
+    // asterisk-manager hands "Variable: NAME" over as { NAME: '' }.
+    const name = evt.variable && typeof evt.variable === 'object' ? Object.keys(evt.variable)[0] : evt.variable;
+    if (name !== 'MIXMONITOR_FILENAME' || !evt.value) return;
+
+    const record = this.store.getByLinkedid(evt.linkedid);
+    if (!record) return;
+
+    const prefix = `${monitorDir}/`;
+    const relative = evt.value.startsWith(prefix) ? evt.value.slice(prefix.length).split('/') : null;
+    if (!relative || relative.some((seg) => !seg || seg === '..')) return;
+
+    const url = `${baseUrl}/${relative.map(encodeURIComponent).join('/')}`;
+    if (!record.recordings) record.recordings = [];
+    record.recordings.push({ file: relative[relative.length - 1], url });
+    this.logger.debug('call.recording_detected', { id: record.id, channel: evt.channel, url });
+  }
+
+  // File names embed the operator's extension (external-1025-<number>-...,
+  // out-<number>-1021-...). Prefer that operator's recording; with no match,
+  // use the call's only recording rather than guess between several.
+  _recordingUrl(record, ext) {
+    const recordings = record.recordings || [];
+    const match = [...recordings].reverse().find((r) => r.file.includes(`-${ext}-`));
+    if (match) return match.url;
+    return recordings.length === 1 ? recordings[0].url : undefined;
+  }
+
   _handleHangupRequest(evt) {
     const record = this.store.getByLinkedid(evt.linkedid);
     if (record && record.direction === 'incoming' && evt.channel === record.trunkChannel) {
@@ -283,6 +319,7 @@ class CallManager {
       if (evt.channel !== record.trunkChannel) return;
       for (const attempt of record.attempts.values()) {
         if (attempt.state === 'answered') {
+          attempt.audioUrl = this._recordingUrl(record, attempt.caller);
           attempt.duration = attempt.answeredAt ? Math.max(0, Math.round((Date.now() - attempt.answeredAt) / 1000)) : undefined;
           this._transition(attempt, 'completed');
         } else if (attempt.state === 'started') {
@@ -297,6 +334,7 @@ class CallManager {
     const result = nextState(record, evt);
     if (result) {
       Object.assign(record, result.patch);
+      if (result.newState === 'completed') record.audioUrl = this._recordingUrl(record, record.caller);
       this._transition(record, result.newState);
     }
 
@@ -343,6 +381,9 @@ class CallManager {
     };
     if (record.duration !== undefined && record.duration !== null) {
       payload.duration = record.duration;
+    }
+    if (record.state === 'completed' && record.audioUrl) {
+      payload.audio_url = record.audioUrl;
     }
 
     this.webhookClient.postCallEvent(payload).catch((err) => {

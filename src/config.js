@@ -76,6 +76,17 @@ function loadConfig() {
     }
   }
 
+  // Public URL prefix that maps onto RECORDING_DIR (e.g. an nginx location).
+  // Optional: when unset, recordings are neither tracked nor sent to KeyCRM.
+  let recordingBaseUrl;
+  if (process.env.RECORDING_BASE_URL) {
+    try {
+      recordingBaseUrl = new URL(process.env.RECORDING_BASE_URL).toString().replace(/\/+$/, '');
+    } catch {
+      errors.push('RECORDING_BASE_URL must be a valid URL');
+    }
+  }
+
   const inboundContexts = (process.env.INBOUND_CONTEXTS || '')
     .split(',')
     .map((s) => s.trim())
@@ -111,6 +122,10 @@ function loadConfig() {
       maxConcurrentCalls: maxConcurrentCalls.value,
       staleCallMaxAgeMs: staleCallMaxAgeMs.value,
       staleSweepIntervalMs: staleSweepIntervalMs.value,
+    },
+    recording: {
+      baseUrl: recordingBaseUrl,
+      monitorDir: (process.env.RECORDING_DIR || '/var/spool/asterisk/monitor').replace(/\/+$/, ''),
     },
     webhook: {
       timeoutMs: webhookTimeoutMs.value,

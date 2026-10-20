@@ -19,7 +19,7 @@ function main() {
 
   const logger = createLogger(config.logLevel);
 
-  const ami = new AmiConnection({ ...config.ami, logger });
+  const ami = new AmiConnection({ ...config.ami, logger, eventMask: config.recording.baseUrl ? 'call,dialplan' : 'call' });
   const store = new CallStore();
   const webhookClient = new WebhookClient({ url: config.keycrm.webhookUrl, ...config.webhook, logger });
   const callManager = new CallManager({ ami, store, webhookClient, logger, config });
