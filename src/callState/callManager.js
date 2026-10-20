@@ -151,6 +151,9 @@ class CallManager {
       case 'DialEnd':
         this._handleDial(evt);
         break;
+      case 'HangupRequest':
+        this._handleHangupRequest(evt);
+        break;
       case 'Hangup':
         this._handleHangup(evt);
         break;
@@ -190,9 +193,12 @@ class CallManager {
         direction: 'incoming',
         caller: '',
         destinationNumber: normalizePhone(evt.calleridnum),
-        // Not reported to KeyCRM yet: 'started' is sent once the call
-        // actually begins ringing an extension (see _handleDial).
+        // Parent record for the whole inbound call; never reported itself.
+        // Each operator it rings gets its own attempt record (see
+        // _handleIncomingDial) that is what KeyCRM sees.
         state: 'new',
+        attempts: new Map(),
+        callerHungUp: false,
         linkedid,
         agentChannel: null,
         trunkChannel: evt.channel,
@@ -208,12 +214,8 @@ class CallManager {
     const record = this.store.getByLinkedid(evt.linkedid);
     if (!record) return;
 
-    if (record.direction === 'incoming' && record.state === 'new') {
-      if (evt.event !== 'DialBegin') return;
-      const ext = extractDialedExtension(evt, this.config.call.extensionLength);
-      if (!ext) return;
-      record.caller = ext;
-      this._transition(record, 'started');
+    if (record.direction === 'incoming') {
+      this._handleIncomingDial(record, evt);
       return;
     }
 
@@ -223,16 +225,71 @@ class CallManager {
     this._transition(record, result.newState);
   }
 
+  // An inbound call rings operators one after another (or several at once).
+  // Every DialBegin from the trunk channel to an extension is a new attempt
+  // reported as 'started'; its DialEnd then resolves it to 'answered' or,
+  // if the operator didn't pick up, 'busy'.
+  _handleIncomingDial(call, evt) {
+    if (evt.channel !== call.trunkChannel) return; // inner legs (Local -> phone)
+
+    if (evt.event === 'DialBegin') {
+      const ext = extractDialedExtension(evt, this.config.call.extensionLength);
+      if (!ext || call.attempts.has(evt.destchannel)) return;
+      const attempt = this.store.create({
+        id: crypto.randomUUID(),
+        direction: 'incoming',
+        caller: ext,
+        destinationNumber: call.destinationNumber,
+        state: 'started',
+        linkedid: null, // the parent owns the linkedid index entry
+        agentChannel: null,
+        trunkChannel: call.trunkChannel,
+        answeredAt: null,
+        createdAt: Date.now(),
+      });
+      call.attempts.set(evt.destchannel, attempt);
+      this._report(attempt);
+      return;
+    }
+
+    const attempt = call.attempts.get(evt.destchannel);
+    if (!attempt || attempt.state !== 'started') return;
+
+    if (evt.dialstatus === 'ANSWER') {
+      attempt.answeredAt = Date.now();
+      this._transition(attempt, 'answered');
+    } else if (evt.dialstatus === 'CANCEL' && call.callerHungUp) {
+      this._transition(attempt, 'canceled');
+      this.store.scheduleCleanup(attempt.id);
+    } else if (evt.dialstatus) {
+      this._transition(attempt, 'busy');
+      this.store.scheduleCleanup(attempt.id);
+    }
+  }
+
+  _handleHangupRequest(evt) {
+    const record = this.store.getByLinkedid(evt.linkedid);
+    if (record && record.direction === 'incoming' && evt.channel === record.trunkChannel) {
+      record.callerHungUp = true;
+    }
+  }
+
   _handleHangup(evt) {
     const record = this.store.getByLinkedid(evt.linkedid);
     if (!record) return;
 
-    // An incoming call has many legs (queue Local channels, each phone);
-    // only the trunk channel hanging up ends the call.
-    if (record.direction === 'incoming' && evt.channel !== record.trunkChannel) return;
-
-    // Caller hung up before ever ringing an extension: nothing was reported.
-    if (record.state === 'new') {
+    if (record.direction === 'incoming') {
+      // Many legs share the linkedid; only the trunk hanging up ends the call.
+      if (evt.channel !== record.trunkChannel) return;
+      for (const attempt of record.attempts.values()) {
+        if (attempt.state === 'answered') {
+          attempt.duration = attempt.answeredAt ? Math.max(0, Math.round((Date.now() - attempt.answeredAt) / 1000)) : undefined;
+          this._transition(attempt, 'completed');
+        } else if (attempt.state === 'started') {
+          this._transition(attempt, 'canceled');
+        }
+        this.store.scheduleCleanup(attempt.id);
+      }
       this.store.scheduleCleanup(record.id);
       return;
     }
@@ -251,6 +308,13 @@ class CallManager {
   _handleTransfer(evt) {
     const record = this.store.getByLinkedid(evt.linkedid);
     if (!record) return;
+
+    if (record.direction === 'incoming') {
+      for (const attempt of record.attempts.values()) {
+        if (attempt.state === 'answered') this._transition(attempt, 'transferred');
+      }
+      return;
+    }
 
     const result = nextState(record, evt);
     if (!result) return;
