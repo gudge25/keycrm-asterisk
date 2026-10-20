@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const { nextState } = require('./stateMachine');
-const { extractExtension, isValidExtension } = require('../util/extension');
+const { extractExtension, extractDialedExtension, isValidExtension } = require('../util/extension');
 const { normalizePhone } = require('../util/phone');
 const { buildOriginateAction, buildHangupAction } = require('../ami/originate');
 
@@ -190,7 +190,9 @@ class CallManager {
         direction: 'incoming',
         caller: '',
         destinationNumber: normalizePhone(evt.calleridnum),
-        state: 'started',
+        // Not reported to KeyCRM yet: 'started' is sent once the call
+        // actually begins ringing an extension (see _handleDial).
+        state: 'new',
         linkedid,
         agentChannel: null,
         trunkChannel: evt.channel,
@@ -199,7 +201,6 @@ class CallManager {
       });
       this.store.attachLinkedid(id, linkedid);
       this.logger.debug('call.detected_incoming', { id, channel: evt.channel, linkedid });
-      this._report(record);
     }
   }
 
@@ -207,9 +208,13 @@ class CallManager {
     const record = this.store.getByLinkedid(evt.linkedid);
     if (!record) return;
 
-    if (record.direction === 'incoming' && !record.caller) {
-      const ext = extractExtension(evt.destination || evt.dialstring, this.config.call.extensionLength);
-      if (ext) record.caller = ext;
+    if (record.direction === 'incoming' && record.state === 'new') {
+      if (evt.event !== 'DialBegin') return;
+      const ext = extractDialedExtension(evt, this.config.call.extensionLength);
+      if (!ext) return;
+      record.caller = ext;
+      this._transition(record, 'started');
+      return;
     }
 
     const result = nextState(record, evt);
@@ -221,6 +226,16 @@ class CallManager {
   _handleHangup(evt) {
     const record = this.store.getByLinkedid(evt.linkedid);
     if (!record) return;
+
+    // An incoming call has many legs (queue Local channels, each phone);
+    // only the trunk channel hanging up ends the call.
+    if (record.direction === 'incoming' && evt.channel !== record.trunkChannel) return;
+
+    // Caller hung up before ever ringing an extension: nothing was reported.
+    if (record.state === 'new') {
+      this.store.scheduleCleanup(record.id);
+      return;
+    }
 
     const result = nextState(record, evt);
     if (result) {

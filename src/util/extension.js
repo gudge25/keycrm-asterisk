@@ -14,4 +14,14 @@ function extractExtension(channelOrDialstring, length) {
   return isValidExtension(withoutSuffix, length) ? withoutSuffix : null;
 }
 
-module.exports = { isValidExtension, extractExtension };
+// Extension a DialBegin is ringing, taken from DestChannel
+// ("PJSIP/1025-000007be", "Local/1025@from-queue-000002be;1"), falling back
+// to DestCallerIDNum. Returns null when the target is not an extension
+// (e.g. a trunk or an external number).
+function extractDialedExtension(evt, length) {
+  const m = String(evt.destchannel || '').match(new RegExp(`^(?:PJSIP|SIP|Local)/(\\d{${length}})(?=[@-]|$)`));
+  if (m) return m[1];
+  return isValidExtension(evt.destcalleridnum, length) ? evt.destcalleridnum : null;
+}
+
+module.exports = { isValidExtension, extractExtension, extractDialedExtension };

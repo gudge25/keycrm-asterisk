@@ -16,6 +16,9 @@ const DIAL_STATUS_TO_STATE = {
 function nextState(record, amiEvent) {
   switch (amiEvent.event) {
     case 'DialBegin':
+      // Incoming calls get 'started' from the first DialBegin (callManager)
+      // and fan out to several legs; don't flip to 'pending' on each.
+      if (record.direction === 'incoming') return null;
       if (record.state === 'started' || record.state === 'pending') {
         return { newState: 'pending', patch: {} };
       }
