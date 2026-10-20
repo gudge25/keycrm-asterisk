@@ -52,7 +52,12 @@ function loadConfig() {
   const staleCallMaxAgeMs = optionalInt('STALE_CALL_MAX_AGE_MS', 4 * 60 * 60 * 1000, { min: 60000 });
   const staleSweepIntervalMs = optionalInt('STALE_SWEEP_INTERVAL_MS', 5 * 60 * 1000, { min: 10000 });
 
+  const routingLookupTimeoutMs = optionalInt('ROUTING_LOOKUP_TIMEOUT_MS', 1500, { min: 100 });
+  const routingManagerRingMs = optionalInt('ROUTING_MANAGER_RING_MS', 15000, { min: 3000 });
+
   for (const [name, result] of [
+    ['ROUTING_LOOKUP_TIMEOUT_MS', routingLookupTimeoutMs],
+    ['ROUTING_MANAGER_RING_MS', routingManagerRingMs],
     ['AMI_PORT', amiPort],
     ['HTTP_PORT', httpPort],
     ['EXTENSION_LENGTH', extensionLength],
@@ -95,6 +100,15 @@ function loadConfig() {
     errors.push('INBOUND_CONTEXTS must list at least one context');
   }
 
+  // "context,exten,priority": where to send the call when the KeyCRM manager
+  // can't take it. Default (unset) is the point where the call first arrived.
+  let routingFallback;
+  if (process.env.ROUTING_FALLBACK) {
+    const [context, exten, priority = '1'] = process.env.ROUTING_FALLBACK.split(',').map((x) => x.trim());
+    if (!context || !exten) errors.push('ROUTING_FALLBACK must be "context,exten[,priority]"');
+    else routingFallback = { context, exten, priority };
+  }
+
   if (errors.length > 0) {
     throw new Error(`Invalid configuration:\n  - ${errors.join('\n  - ')}`);
   }
@@ -122,6 +136,13 @@ function loadConfig() {
       maxConcurrentCalls: maxConcurrentCalls.value,
       staleCallMaxAgeMs: staleCallMaxAgeMs.value,
       staleSweepIntervalMs: staleSweepIntervalMs.value,
+    },
+    routing: {
+      enabled: process.env.ROUTING_ENABLED === 'true',
+      lookupTimeoutMs: routingLookupTimeoutMs.value,
+      managerRingMs: routingManagerRingMs.value,
+      context: process.env.ROUTING_CONTEXT || 'from-internal',
+      fallback: routingFallback,
     },
     recording: {
       baseUrl: recordingBaseUrl,

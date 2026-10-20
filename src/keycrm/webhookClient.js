@@ -11,6 +11,30 @@ class WebhookClient {
     this.logger = logger;
   }
 
+  // KeyCRM's "route" action: which manager (extension) owns this client?
+  // Single attempt, no retries — the caller is on the line. Returns the
+  // manager's extension number, or null if unknown / on any failure.
+  async lookupManager(number, timeoutMs) {
+    try {
+      const res = await fetch(this.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ action: 'route', route: number }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) {
+        this.logger.debug('keycrm.route.no_match', { status: res.status });
+        return null;
+      }
+      const data = await res.json();
+      const manager = data && data.client && data.client.manager && data.client.manager.number;
+      return manager ? String(manager) : null;
+    } catch (err) {
+      this.logger.warn('keycrm.route.failed', { error: err.message });
+      return null;
+    }
+  }
+
   async postCallEvent(callPayload) {
     const body = JSON.stringify({ action: 'call', call: callPayload });
     let attempt = 0;

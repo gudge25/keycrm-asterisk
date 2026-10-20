@@ -20,4 +20,12 @@ function buildHangupAction({ channel, cause }) {
   };
 }
 
-module.exports = { buildOriginateAction, buildHangupAction };
+function buildRedirectAction({ channel, context, exten, priority }) {
+  return { action: 'redirect', channel, context, exten, priority: priority ?? 1 };
+}
+
+function buildExtensionStateAction({ exten, context }) {
+  return { action: 'extensionstate', exten, context };
+}
+
+module.exports = { buildOriginateAction, buildHangupAction, buildRedirectAction, buildExtensionStateAction };

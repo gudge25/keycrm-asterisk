@@ -2,7 +2,13 @@
 
 Bridges an Asterisk 20 (FreePBX) PBX to KeyCRM's "Other" telephony channel. KeyCRM's integration is a plain HTTP/webhook protocol, not AMI-aware — this service keeps a persistent AMI connection to Asterisk, translates call events into KeyCRM's expected JSON, and exposes the two HTTP endpoints KeyCRM calls to originate/hang up calls.
 
-Scope: **report-only** for incoming calls. Asterisk's existing dialplan decides who rings; this service only observes and reports state. KeyCRM's `action:"route"` lookup (active call redirection) is not implemented.
+Scope: reports call state to KeyCRM and, optionally (`ROUTING_ENABLED=true`), does smart routing of incoming calls (see below). Without routing it is **report-only**: Asterisk's dialplan decides who rings and this service only observes.
+
+## Smart routing (optional)
+
+On a new incoming call the service asks KeyCRM (`action:"route"` on the same call-route URL as the webhook) which manager owns the caller's number. If that manager's extension is idle (AMI `ExtensionState` on `ext-local` — busy, ringing, DND and offline all count as unavailable) the trunk channel is moved with AMI `Redirect` to `ROUTING_CONTEXT,<manager ext>,1`, skipping IVR/queue.
+
+The call goes back to where it originally arrived (or `ROUTING_FALLBACK`) if the manager doesn't answer within `ROUTING_MANAGER_RING_MS`, or the dial ends unanswered/busy. Fallback re-enters that dialplan point, so an IVR there will play again. Unknown client, no manager, manager unavailable, lookup slower than `ROUTING_LOOKUP_TIMEOUT_MS`, or the dialplan having already started ringing someone: the call proceeds untouched. Routing never delays or blocks the call.
 
 ## Event volume
 

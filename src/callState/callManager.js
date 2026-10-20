@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const { nextState } = require('./stateMachine');
 const { extractExtension, extractDialedExtension, isValidExtension } = require('../util/extension');
 const { normalizePhone } = require('../util/phone');
-const { buildOriginateAction, buildHangupAction } = require('../ami/originate');
+const { buildOriginateAction, buildHangupAction, buildRedirectAction, buildExtensionStateAction } = require('../ami/originate');
 
 class NotFoundError extends Error {
   constructor(message) {
@@ -202,6 +202,8 @@ class CallManager {
         state: 'new',
         attempts: new Map(),
         callerHungUp: false,
+        origin: { context: evt.context, exten: evt.exten, priority: evt.priority },
+        routing: null,
         linkedid,
         agentChannel: null,
         trunkChannel: evt.channel,
@@ -210,6 +212,12 @@ class CallManager {
       });
       this.store.attachLinkedid(id, linkedid);
       this.logger.debug('call.detected_incoming', { id, channel: evt.channel, linkedid });
+
+      if (this.config.routing && this.config.routing.enabled) {
+        this._routeIncoming(record).catch((err) => {
+          this.logger.warn('routing.failed', { id, error: err.message });
+        });
+      }
     }
   }
 
@@ -258,8 +266,11 @@ class CallManager {
     const attempt = call.attempts.get(evt.destchannel);
     if (!attempt || attempt.state !== 'started') return;
 
+    const routedManager = call.routing && !call.routing.fellBack && attempt.caller === call.routing.manager;
+
     if (evt.dialstatus === 'ANSWER') {
       attempt.answeredAt = Date.now();
+      if (routedManager) clearTimeout(call.routing.timer);
       this._transition(attempt, 'answered');
     } else if (evt.dialstatus === 'CANCEL' && call.callerHungUp) {
       this._transition(attempt, 'canceled');
@@ -267,7 +278,65 @@ class CallManager {
     } else if (evt.dialstatus) {
       this._transition(attempt, 'busy');
       this.store.scheduleCleanup(attempt.id);
+      if (routedManager) this._routeFallback(call, `dial_${evt.dialstatus.toLowerCase()}`);
     }
+  }
+
+  // --- smart routing ----------------------------------------------------
+
+  // Ask KeyCRM which manager owns this caller and, if that manager's phone
+  // is idle, move the call straight to them (skipping IVR/queue). If they
+  // don't answer within managerRingMs, or the dial fails, _routeFallback
+  // sends the call back to where it came in.
+  async _routeIncoming(call) {
+    const { lookupTimeoutMs, managerRingMs, context } = this.config.routing;
+    const { extensionLength } = this.config.call;
+    const stillRoutable = () => this.store.getById(call.id) && !call.routing && call.attempts.size === 0 && !call.callerHungUp;
+
+    if (!/^\d{6,}$/.test(call.destinationNumber)) return; // anonymous / malformed caller id
+
+    const manager = await this.webhookClient.lookupManager(call.destinationNumber, lookupTimeoutMs);
+    if (!manager) return;
+    if (!isValidExtension(manager, extensionLength)) {
+      this.logger.warn('routing.manager_not_extension', { id: call.id, manager });
+      return;
+    }
+    if (!stillRoutable()) return; // dialplan already started ringing someone
+
+    // ExtensionState: 0 = idle. Anything else is busy, ringing, DND or offline.
+    const state = await this.ami.action(buildExtensionStateAction({ exten: manager, context: 'ext-local' }));
+    if (String(state.status) !== '0') {
+      this.logger.info('routing.manager_unavailable', { id: call.id, manager, status: state.status });
+      return;
+    }
+    if (!stillRoutable()) return;
+
+    // Claim before the await so a concurrent event can't start a second route.
+    call.routing = { manager, fellBack: false, timer: null };
+    try {
+      await this.ami.action(buildRedirectAction({ channel: call.trunkChannel, context, exten: manager, priority: 1 }));
+    } catch (err) {
+      call.routing = null;
+      throw err;
+    }
+    this.logger.info('routing.redirected', { id: call.id, manager });
+
+    call.routing.timer = setTimeout(() => this._routeFallback(call, 'timeout'), managerRingMs);
+    call.routing.timer.unref();
+  }
+
+  _routeFallback(call, reason) {
+    const routing = call.routing;
+    if (!routing || routing.fellBack) return;
+    routing.fellBack = true;
+    clearTimeout(routing.timer);
+    if (call.callerHungUp) return;
+
+    const { context, exten, priority } = this.config.routing.fallback || call.origin;
+    this.logger.info('routing.fallback', { id: call.id, manager: routing.manager, reason, context, exten });
+    this.ami
+      .action(buildRedirectAction({ channel: call.trunkChannel, context, exten, priority }))
+      .catch((err) => this.logger.warn('routing.fallback_failed', { id: call.id, error: err.message }));
   }
 
   // MixMonitor publishes the recording path as MIXMONITOR_FILENAME. Every
@@ -317,6 +386,7 @@ class CallManager {
     if (record.direction === 'incoming') {
       // Many legs share the linkedid; only the trunk hanging up ends the call.
       if (evt.channel !== record.trunkChannel) return;
+      if (record.routing) clearTimeout(record.routing.timer);
       for (const attempt of record.attempts.values()) {
         if (attempt.state === 'answered') {
           attempt.audioUrl = this._recordingUrl(record, attempt.caller);
