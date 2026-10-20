@@ -24,7 +24,12 @@ class WebhookClient {
           body,
           signal: AbortSignal.timeout(this.timeoutMs),
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+          const detail = (await res.text().catch(() => '')).slice(0, 500);
+          const err = new Error(`HTTP ${res.status}`);
+          err.detail = detail;
+          throw err;
+        }
         this.logger.debug('keycrm.webhook.sent', { id: callPayload.id, state: callPayload.state, attempt });
         return;
       } catch (err) {
@@ -33,6 +38,7 @@ class WebhookClient {
           state: callPayload.state,
           attempt,
           error: err.message,
+          ...(err.detail && { response: err.detail }),
         });
         if (attempt > this.maxRetries) {
           this.logger.error('keycrm.webhook.dropped', { id: callPayload.id, state: callPayload.state, payload: callPayload });
