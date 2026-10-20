@@ -8,7 +8,13 @@ function createServer({ sharedSecret, routes, logger }) {
     const parsedUrl = new URL(req.url, 'http://internal');
     const route = routes[parsedUrl.pathname];
 
+    // Never log the query string: it carries the shared secret (?token=).
+    const reqMeta = { method: req.method, path: parsedUrl.pathname, ip: req.socket.remoteAddress };
+    logger.debug('http.request', reqMeta);
+    res.on('finish', () => logger.debug('http.response', { ...reqMeta, status: res.statusCode }));
+
     if (req.method !== 'POST' || !route) {
+      logger.warn('http.not_found', reqMeta);
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'not found' }));
       return;
@@ -19,6 +25,7 @@ function createServer({ sharedSecret, routes, logger }) {
     // configured in KeyCRM. The header is kept too for callers that can set it.
     const provided = req.headers['x-keycrm-shared-secret'] || parsedUrl.searchParams.get('token');
     if (provided !== sharedSecret) {
+      logger.warn('http.unauthorized', reqMeta);
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
