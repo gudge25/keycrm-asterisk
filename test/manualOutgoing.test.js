@@ -93,3 +93,27 @@ test('recording that starts before the first DialBegin is kept', () => {
   const completed = t.sent.find((p) => p.state === 'completed');
   assert.strictEqual(completed.audio_url, 'https://rec.example/2026/out-0509491827-1043-x.wav');
 });
+
+test('real FreePBX events: trunk leg in from-pstn does not hide a manual outgoing call', () => {
+  const t = setup();
+  t.cm.config.call.inboundContexts = ['from-pstn', 'from-trunk'];
+  const L = '1793190763.10259';
+  t.emit({ event: 'Newchannel', channel: 'PJSIP/1043-00000ecd', context: 'from-internal', exten: '0669197533', uniqueid: L, linkedid: L, calleridnum: '1043' });
+  t.emit({ event: 'Newchannel', channel: 'PJSIP/0970408408-00000ece', context: 'from-pstn', exten: 's', uniqueid: '1793190763.10260', linkedid: L, calleridnum: '<unknown>' });
+  t.emit({
+    event: 'DialBegin', channel: 'PJSIP/1043-00000ecd', context: 'trunk-dial-with-exten', exten: '0669197533',
+    destchannel: 'PJSIP/0970408408-00000ece', destcalleridnum: '0669197533', dialstring: '0669197533@0970408408',
+    uniqueid: L, linkedid: L,
+  });
+  assert.deepStrictEqual(t.sent.map((p) => [p.direction, p.caller, p.destination_number, p.state]), [
+    ['outgoing', '1043', '0669197533', 'started'],
+    ['outgoing', '1043', '0669197533', 'pending'],
+  ]);
+});
+
+test('a trunk channel that is the first of its call is still an incoming call', () => {
+  const t = setup();
+  t.emit({ event: 'Newchannel', channel: 'PJSIP/trunk-0009', context: 'from-trunk', uniqueid: 'L9', linkedid: 'L9', calleridnum: '380501112233' });
+  t.emit({ event: 'DialBegin', channel: 'PJSIP/trunk-0009', destchannel: 'PJSIP/1043-0010', linkedid: 'L9' });
+  assert.deepStrictEqual(t.sent.map((p) => [p.direction, p.caller, p.state]), [['incoming', '1043', 'started']]);
+});
