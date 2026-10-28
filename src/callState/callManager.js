@@ -191,8 +191,12 @@ class CallManager {
       return;
     }
 
-    // Otherwise, is this a fresh inbound call from the trunk side?
-    if (inboundContexts.includes(evt.context)) {
+    // Otherwise, is this a fresh inbound call from the trunk side? The trunk
+    // must be the call's first channel (uniqueid === linkedid): the trunk leg
+    // of an outgoing call also sits in an inbound context (from-pstn) but is
+    // created later, inside the operator's call.
+    const isFirstChannel = !evt.uniqueid || !evt.linkedid || evt.uniqueid === evt.linkedid;
+    if (inboundContexts.includes(evt.context) && isFirstChannel) {
       const id = crypto.randomUUID();
       const record = this.store.create({
         id,
