@@ -4,6 +4,8 @@ const { extractExtension, extractDialedExtension, isValidExtension } = require('
 const { normalizePhone } = require('../util/phone');
 const { buildOriginateAction, buildHangupAction, buildRedirectAction, buildExtensionStateAction } = require('../ami/originate');
 
+const EARLY_RECORDING_TTL_MS = 30000;
+
 class NotFoundError extends Error {
   constructor(message) {
     super(message);
@@ -32,6 +34,7 @@ class CallManager {
     this.webhookClient = webhookClient;
     this.logger = logger;
     this.config = config;
+    this.earlyRecordings = new Map(); // linkedid -> { at, items }, see _stashRecording
 
     this.ami.onEvent((evt) => this._onAmiEvent(evt));
   }
@@ -222,7 +225,8 @@ class CallManager {
   }
 
   _handleDial(evt) {
-    const record = this.store.getByLinkedid(evt.linkedid);
+    let record = this.store.getByLinkedid(evt.linkedid);
+    if (!record && evt.event === 'DialBegin') record = this._detectManualOutgoing(evt);
     if (!record) return;
 
     if (record.direction === 'incoming') {
@@ -234,6 +238,49 @@ class CallManager {
     if (!result) return;
     Object.assign(record, result.patch);
     this._transition(record, result.newState);
+  }
+
+  // An operator dialled an external number straight from their phone (not via
+  // KeyCRM's click-to-call). The first DialBegin of a linkedid we don't know
+  // yet, from an extension channel to something that isn't an extension, is
+  // the whole signal. Click-to-call and inbound legs never get here: both
+  // already own their linkedid by the time they Dial.
+  _detectManualOutgoing(evt) {
+    if (!this.config.call.manualOutgoing || !evt.linkedid) return null;
+    const { extensionLength } = this.config.call;
+
+    const caller = extractExtension(evt.channel, extensionLength);
+    if (!caller || extractDialedExtension(evt, extensionLength)) return null; // not from a phone, or internal call
+    if (this.store.pendingOriginates.has(caller)) return null; // click-to-call that hasn't correlated yet
+
+    // `exten` can be 's' inside FreePBX macros, and a chan_sip dialstring
+    // reads "trunk/number", so take the first candidate that is a real number.
+    const fromDialstring = String(evt.dialstring || '').split('@')[0].split('/').pop();
+    const dialed = [evt.exten, fromDialstring].map(normalizePhone).find((n) => /^\d{6,}$/.test(n));
+    if (!dialed) return null; // service code / short number
+
+    const id = crypto.randomUUID();
+    const record = this.store.create({
+      id,
+      direction: 'outgoing',
+      caller,
+      destinationNumber: dialed,
+      state: 'started',
+      linkedid: evt.linkedid,
+      agentChannel: evt.channel,
+      trunkChannel: evt.destchannel || null,
+      answeredAt: null,
+      createdAt: Date.now(),
+    });
+    this.store.attachLinkedid(id, evt.linkedid);
+    const early = this.earlyRecordings.get(evt.linkedid);
+    if (early) {
+      record.recordings = early.items;
+      this.earlyRecordings.delete(evt.linkedid);
+    }
+    this.logger.info('call.detected_manual_outgoing', { id, caller, destination: dialed, linkedid: evt.linkedid });
+    this._report(record);
+    return record;
   }
 
   // An inbound call rings operators one after another (or several at once).
@@ -349,17 +396,35 @@ class CallManager {
     const name = evt.variable && typeof evt.variable === 'object' ? Object.keys(evt.variable)[0] : evt.variable;
     if (name !== 'MIXMONITOR_FILENAME' || !evt.value) return;
 
-    const record = this.store.getByLinkedid(evt.linkedid);
-    if (!record) return;
-
     const prefix = `${monitorDir}/`;
     const relative = evt.value.startsWith(prefix) ? evt.value.slice(prefix.length).split('/') : null;
     if (!relative || relative.some((seg) => !seg || seg === '..')) return;
 
     const url = `${baseUrl}/${relative.map(encodeURIComponent).join('/')}`;
+    const recording = { file: relative[relative.length - 1], url };
+
+    const record = this.store.getByLinkedid(evt.linkedid);
+    if (!record) {
+      // A manual outgoing call's record is only created at its first
+      // DialBegin, and MixMonitor can start before that. Hold the recording
+      // for a moment so _detectManualOutgoing can pick it up.
+      if (evt.linkedid) this._stashRecording(evt.linkedid, recording);
+      return;
+    }
+
     if (!record.recordings) record.recordings = [];
-    record.recordings.push({ file: relative[relative.length - 1], url });
+    record.recordings.push(recording);
     this.logger.debug('call.recording_detected', { id: record.id, channel: evt.channel, url });
+  }
+
+  _stashRecording(linkedid, recording) {
+    const now = Date.now();
+    for (const [key, entry] of this.earlyRecordings) {
+      if (now - entry.at > EARLY_RECORDING_TTL_MS) this.earlyRecordings.delete(key);
+    }
+    const entry = this.earlyRecordings.get(linkedid) || { at: now, items: [] };
+    entry.items.push(recording);
+    this.earlyRecordings.set(linkedid, entry);
   }
 
   // File names embed the operator's extension (external-1025-<number>-...,
