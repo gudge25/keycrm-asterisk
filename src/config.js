@@ -133,6 +133,7 @@ function loadConfig() {
       originateContext: process.env.ORIGINATE_CONTEXT,
       originateTimeoutMs: originateTimeoutMs.value,
       inboundContexts,
+      manualOutgoing: process.env.MANUAL_OUTGOING_ENABLED !== 'false',
       maxConcurrentCalls: maxConcurrentCalls.value,
       staleCallMaxAgeMs: staleCallMaxAgeMs.value,
       staleSweepIntervalMs: staleSweepIntervalMs.value,
